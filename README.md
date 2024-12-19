@@ -1,0 +1,2 @@
+# coscan
+Scan for issues
