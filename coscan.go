@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"encoding/json"
 
 	"context"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 )
 
+// FetchLiveAMIPatchStatus retrieves a list of AMI patch statuses for Amazon-owned images.
 func FetchLiveAMIPatchStatus(sess *session.Session) map[string]string {
     ec2Svc := ec2.New(sess)
     input := &ec2.DescribeImagesInput{
@@ -255,8 +257,69 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Successfully authenticated and listed VMs for available cloud providers. Check logs for details.")
 }
 
+// Retrieve CodeQL scanning results for a repository via Github REST API
+func ScanLambdasHandler(w http.ResponseWriter, r *http.Request) {
+    // Read environment variables
+    githubToken := os.Getenv("GITHUB_PAT")
+    githubUsername := os.Getenv("GITHUB_USER")
+    repo := r.URL.Query().Get("repo") // Repository name from query parameters
+
+    if githubToken == "" || repo == "" {
+        http.Error(w, "Missing required environment variables or query parameters", http.StatusBadRequest)
+        return
+    }
+
+    // Construct API request
+    apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/code-scanning/alerts", githubUsername, repo)
+    req, err := http.NewRequest("GET", apiURL, nil)
+    if err != nil {
+        http.Error(w, "Failed to create API request: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Add Authorization header
+    req.Header.Set("Authorization", "Bearer "+githubToken)
+    req.Header.Set("Accept", "application/vnd.github+json")
+
+    // Make the API request
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        http.Error(w, "Failed to contact GitHub API: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+    defer resp.Body.Close()
+
+    // Check for errors in the response
+    if resp.StatusCode != http.StatusOK {
+        http.Error(w, "GitHub API responded with: "+resp.Status, resp.StatusCode)
+        return
+    }
+
+    // Parse the response body
+    var alerts []map[string]interface{}
+    err = json.NewDecoder(resp.Body).Decode(&alerts)
+    if err != nil {
+        http.Error(w, "Failed to parse GitHub API response: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Check if there are no alerts
+    if len(alerts) == 0 {
+        w.Header().Set("Content-Type", "text/plain")
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("[OK]\n"))
+        return
+    }
+
+    // Respond with the parsed alerts
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(alerts)
+}
+
 func main() {
 	http.HandleFunc("/scanvm", ScanVMHandler)
+	http.HandleFunc("/scanlambdas", ScanLambdasHandler)
 	port := ":8080"
 	log.Printf("Starting server on port %s...", port)
 	if err := http.ListenAndServe(port, nil); err != nil {
