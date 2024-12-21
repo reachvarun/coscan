@@ -198,20 +198,30 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 	scanPatches := strings.ToLower(query.Get("scanPatches")) == "true"
 	filterCritical := strings.ToLower(query.Get("filter")) == "critical"
 
+	type ProviderResult struct {
+		Provider string      `json:"provider"`
+		Success  bool        `json:"success"`
+		Message  string      `json:"message"`
+		Data     interface{} `json:"data,omitempty"`
+	}
+
+	results := []ProviderResult{}
+
 	type loginResult struct {
 		provider string
 		err      error
 		session  *session.Session
 	}
 
-	results := make(chan loginResult, 1)
+	loginResults := make(chan loginResult, 1)
 
 	// Start authentication attempts concurrently
 	var awsSession *session.Session
 	go func() {
 		sess, err := AWSLogin()
-		results <- loginResult{"AWS", err, sess}
+		loginResults <- loginResult{"AWS", err, sess}
 	}()
+	// Uncomment for Azure and GCP
 	//go func() { results <- loginResult{"Azure", AzureLogin(), nil} }()
 	//go func() { results <- loginResult{"GCP", GCPLogin(), nil} }()
 
@@ -219,11 +229,14 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 	totalResults := 1 // Only AWS is active for now
 
 	for i := 0; i < totalResults; i++ {
-	    result := <-results
+	    result := <-loginResults
 	    if result.err != nil {
+		log.Printf("Failed to authenticate with %s: %v", result.provider, result.err)
 	        errors = append(errors, fmt.Sprintf("%s: %v", result.provider, result.err))
+		results = append(results, ProviderResult{result.provider, false, result.err.Error(), nil})
 	    } else {
 	        log.Printf("Successfully authenticated with %s", result.provider)
+		results = append(results, ProviderResult{result.provider, true, "Authenticated successfully", nil})
 	        if result.provider == "AWS" {
 	            awsSession = result.session
 	        }
@@ -231,8 +244,7 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(errors) > 0 {
-		http.Error(w, "Failed to authenticate with: "+fmt.Sprintf("%v", errors), http.StatusInternalServerError)
-		return
+		log.Printf("Authentication errors: %v", errors)
 	}
 
 	// List VMs for authenticated providers
@@ -240,20 +252,35 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Listing AWS VMs...")
 		instances, err := ListAWSVMs(awsSession)
 		if err != nil {
-			http.Error(w, "Failed to list AWS VMs: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if scanPatches {
-			ScanForPatches(awsSession, instances, filterCritical)
+			log.Printf("Failed to list AWS VMs: %v", err)
+			results = append(results, ProviderResult{"AWS-ListVMs", false, err.Error(), nil})
+		} else {
+			log.Println("AWS VMs listed successfully.")
+			vmData := []string{}
+			for _, instance := range instances {
+				vmData = append(vmData, aws.StringValue(instance.InstanceId))
+			}
+			results = append(results, ProviderResult{"AWS-ListVMs", true, "Listed VMs successfully", vmData})
+
+			if scanPatches {
+				log.Println("Scanning AWS instances for patches...")
+				ScanForPatches(awsSession, instances, filterCritical)
+				results = append(results, ProviderResult{"AWS-ScanPatches", true, "Patch scanning completed", nil})
+			}
 		}
 	}
 
 	log.Println("Listing Azure VMs...")
 	ListAzureVMs()
+	results = append(results, ProviderResult{"Azure", false, "Functionality not implemented", nil})
 
 	log.Println("Listing GCP VMs...")
 	ListGCPVMs()
+	results = append(results, ProviderResult{"GCP", false, "Functionality not implemented", nil})
 
+	// Respond with the results as JSON
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 	fmt.Fprintln(w, "Successfully authenticated and listed VMs for available cloud providers. Check logs for details.")
 }
 
