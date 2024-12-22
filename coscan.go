@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"encoding/json"
+	"regexp"
 
 	"context"
 
@@ -291,6 +292,12 @@ func ScanLambdasHandler(w http.ResponseWriter, r *http.Request) {
     githubUsername := os.Getenv("GITHUB_USER")
     repo := r.URL.Query().Get("repo") // Repository name from query parameters
 
+    if !isValidRepo(repo) {
+        http.Error(w, "Invalid repository name", http.StatusBadRequest)
+        return
+    }
+
+
     if githubToken == "" || repo == "" {
         http.Error(w, "Missing required environment variables or query parameters", http.StatusBadRequest)
         return
@@ -342,6 +349,18 @@ func ScanLambdasHandler(w http.ResponseWriter, r *http.Request) {
     // Respond with the parsed alerts
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(alerts)
+}
+
+// isValidRepo validates the repository name against GitHub naming conventions.
+func isValidRepo(repo string) bool {
+    // GitHub repository name regex: 1-100 alphanumeric, hyphens, underscores
+    validRepoRegex := `^[a-zA-Z0-9\-_]{1,100}$`
+    matched, err := regexp.MatchString(validRepoRegex, repo)
+    if err != nil {
+        log.Printf("Error validating repo name: %v", err)
+        return false
+    }
+    return matched
 }
 
 func main() {
