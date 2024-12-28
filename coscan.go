@@ -25,12 +25,12 @@ import (
 )
 
 // FetchLiveAMIPatchStatus retrieves a list of AMI patch statuses for Amazon-owned images.
-func FetchLiveAMIPatchStatus(sess *session.Session) map[string]string {
+func FetchLiveAMIPatchStatus(sess *session.Session, filterPattern string) map[string]string {
     ec2Svc := ec2.New(sess)
     input := &ec2.DescribeImagesInput{
         Owners: []*string{aws.String("amazon")}, // Filter for Amazon-owned AMIs
         Filters: []*ec2.Filter{
-            {Name: aws.String("name"), Values: []*string{aws.String("amzn2-ami-hvm-*")}},
+            {Name: aws.String("name"), Values: []*string{aws.String(filterPattern)}},
         },
     }
 
@@ -86,7 +86,7 @@ func ListAWSVMs(sess *session.Session) ([]*ec2.Instance, error) {
 }
 
 // ScanForPatches scans instances for all patches or critical patches
-func ScanForPatches(sess *session.Session, instances []*ec2.Instance, filterCritical bool) {
+func ScanForPatches(sess *session.Session, instances []*ec2.Instance, filterCritical bool, filterPattern string) {
 	ssmSvc := ssm.New(sess)
 	log.Println("Scanning for patches using AWS SSM...")
 
@@ -117,13 +117,13 @@ func ScanForPatches(sess *session.Session, instances []*ec2.Instance, filterCrit
 
 		if err != nil {
 		    log.Printf("SSM unavailable for instance %s, falling back to AMI comparison.", instanceID)
-		    CheckAMIPatchStatus(instance, sess)
+		    CheckAMIPatchStatus(instance, sess, filterPattern)
 		    continue
 		}
 
 		if len(result.Patches) == 0 {
 		    log.Printf("No patches found for instance: %s. Checking AMI as fallback.", instanceID)
-		    CheckAMIPatchStatus(instance, sess) // Invoke fallback for empty results
+		    CheckAMIPatchStatus(instance, sess, filterPattern) // Invoke fallback for empty results
 		    continue
 		}
 
@@ -140,8 +140,8 @@ func ScanForPatches(sess *session.Session, instances []*ec2.Instance, filterCrit
 }
 
 // CheckAMIPatchStatus checks AMI ID against known unpatched images
-func CheckAMIPatchStatus(instance *ec2.Instance, sess *session.Session) {
-    liveAMIs := FetchLiveAMIPatchStatus(sess)
+func CheckAMIPatchStatus(instance *ec2.Instance, sess *session.Session, filterPattern string) {
+    liveAMIs := FetchLiveAMIPatchStatus(sess, filterPattern)
     imageID := aws.StringValue(instance.ImageId)
     instanceID := aws.StringValue(instance.InstanceId)
 
@@ -200,6 +200,18 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	scanPatches := strings.ToLower(query.Get("scanPatches")) == "true"
 	filterCritical := strings.ToLower(query.Get("filter")) == "critical"
+
+	// Get AMI filter pattern from query parameters or use default
+	amiFilter := "amzn2-ami-hvm-*"
+	if customFilter := r.URL.Query().Get("amiFilter"); customFilter != "" {
+	    if isValidFilterPattern(customFilter) {
+        	amiFilter = customFilter
+	    } else {
+       		log.Printf("Invalid filter pattern: %s", customFilter)
+	        http.Error(w, "Invalid filter pattern", http.StatusBadRequest)
+	        return
+	    }
+	}
 
 	type ProviderResult struct {
 		Provider string      `json:"provider"`
@@ -267,7 +279,7 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 
 			if scanPatches {
 				log.Println("Scanning AWS instances for patches...")
-				ScanForPatches(awsSession, instances, filterCritical)
+				ScanForPatches(awsSession, instances, filterCritical, amiFilter)
 				results = append(results, ProviderResult{"AWS-ScanPatches", true, "Patch scanning completed", nil})
 			}
 		}
@@ -368,6 +380,18 @@ func isValidRepo(repo string) bool {
     matched, err := regexp.MatchString(validRepoRegex, repo)
     if err != nil {
         log.Printf("Error validating repo name: %v", err)
+        return false
+    }
+    return matched
+}
+
+// isValidFilterPattern validates the filter pattern against expected formats.
+func isValidFilterPattern(pattern string) bool {
+    // Allow alphanumeric characters, hyphens, asterisks, and slashes
+    validPatternRegex := `^[a-zA-Z0-9\-/\*]+$`
+    matched, err := regexp.MatchString(validPatternRegex, pattern)
+    if err != nil {
+        log.Printf("Error validating filter pattern: %v", err)
         return false
     }
     return matched
