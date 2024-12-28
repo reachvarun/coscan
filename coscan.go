@@ -20,6 +20,8 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/api/compute/v1"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+
+	"golang.org/x/time/rate"
 )
 
 // FetchLiveAMIPatchStatus retrieves a list of AMI patch statuses for Amazon-owned images.
@@ -287,6 +289,14 @@ func ScanVMHandler(w http.ResponseWriter, r *http.Request) {
 
 // Retrieve CodeQL scanning results for a repository via Github REST API
 func ScanLambdasHandler(w http.ResponseWriter, r *http.Request) {
+    limiter := rate.NewLimiter(5, 50) // 5 requests per second, burst of 50
+
+    // Wait for rate limiter permission
+    if err := limiter.Wait(context.Background()); err != nil {
+        http.Error(w, "Rate limit exceeded, please try again later.", http.StatusTooManyRequests)
+        return
+    }
+
     // Read environment variables
     githubToken := os.Getenv("GITHUB_PAT")
     githubUsername := os.Getenv("GITHUB_USER")
