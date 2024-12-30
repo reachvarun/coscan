@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"time"
 	"strings"
 	"encoding/json"
 	"regexp"
@@ -398,11 +400,33 @@ func isValidFilterPattern(pattern string) bool {
 }
 
 func main() {
+	// Define HTTP routes
 	http.HandleFunc("/scanvm", ScanVMHandler)
 	http.HandleFunc("/scanlambdas", ScanLambdasHandler)
 	port := ":8080"
 	log.Printf("Starting server on port %s...", port)
-	if err := http.ListenAndServe(port, nil); err != nil {
-		log.Fatalf("failed to start server: %v", err)
+
+	// Create & run the server on separate goroutine with graceful shutdown
+	//
+	srv := &http.Server{Addr: port, Handler: nil}
+	go func() {
+		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			log.Fatalf("ListenAndServe(): %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt)
+
+	<-quit
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+
+	log.Println("Server exiting")
 }
