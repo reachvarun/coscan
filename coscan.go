@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"io"
 	"os"
 	"os/signal"
 	"time"
 	"strings"
 	"encoding/json"
+	"encoding/base64"
 	"regexp"
+	"crypto/rand"
 
 	"context"
 
@@ -24,7 +28,149 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 
 	"golang.org/x/time/rate"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/microsoft"
 )
+
+var stateStore = make(map[string]bool) // [TODO] Temporary store for valid states. Move to e.g. Redis for production
+
+// Generate a cryptographically secure random state to prevent CSRF attacks in the OAuth flow
+func generateState() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		panic("failed to generate random state")
+	}
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+var oauthConfig = &oauth2.Config{
+	ClientID:     os.Getenv("AZURE_CLIENT_ID"),
+	ClientSecret: os.Getenv("AZURE_USER_SECRET"),
+	RedirectURL:  os.Getenv("AZURE_REDIRECT_URI"),
+	Scopes:       []string{"https://graph.microsoft.com/Sites.Read.All"},
+	Endpoint:     microsoft.AzureADEndpoint(os.Getenv("AZURE_TENANT_ID")),
+}
+
+// Register Azure Entra OAuth callback
+func AzureLoginHandler(w http.ResponseWriter, r *http.Request) {
+	state := generateState()
+	stateStore[state] = true
+	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOnline)
+
+	//http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	fmt.Fprintln(w, url) // Write URL directly to the HTTP response while running headless
+}
+
+// Handle Azure Entra OAuth callback
+func AzureCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		http.Error(w, "Missing state", http.StatusBadRequest)
+		return
+	}
+	if !stateStore[state] {
+		http.Error(w, "Invalid state", http.StatusBadRequest)
+		return
+	}
+	// Remove the state from the store after validation for replay prevention
+	delete(stateStore, state)
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "Authorization code not found", http.StatusBadRequest)
+		return
+	}
+	log.Println("Authorization Code:", code)
+
+	//token, err := oauthConfig.Exchange(context.Background(), code)
+	token, err := ExchangeAzureTokenManually(code) // Exchange token manually while running headless
+	if err != nil {
+		log.Printf("Failed to exchange token: %v", err)
+		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
+		return
+	}
+	// [WARN] For debugging only; do not log sensitive tokens in production
+	log.Println("Access Token:", token.AccessToken)
+	fmt.Fprintf(w, "Token received. Access Token: %s", token.AccessToken)
+
+	// Fetch SharePoint data
+	siteID := r.URL.Query().Get("siteID") // Pass siteID in query
+	if siteID == "" {
+		http.Error(w, "siteID not provided", http.StatusBadRequest)
+		return
+	}
+	siteData, err := GetSharePointSiteData(token, siteID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return site data
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(siteData)
+}
+
+// Perform Azure Entra OAuth token exchange manually
+func ExchangeAzureTokenManually(code string) (*oauth2.Token, error) {
+    data := url.Values{}
+    data.Set("client_id", os.Getenv("AZURE_CLIENT_ID"))
+    data.Set("client_secret", os.Getenv("AZURE_USER_SECRET"))
+    data.Set("code", code)
+    data.Set("grant_type", "authorization_code")
+    data.Set("redirect_uri", os.Getenv("AZURE_REDIRECT_URI"))
+
+    req, err := http.NewRequest("POST", fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", os.Getenv("AZURE_TENANT_ID")), strings.NewReader(data.Encode()))
+    if err != nil {
+        return nil, err
+    }
+
+    req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, err
+    }
+
+    log.Println("Token Response:", string(body))
+
+    // Parse the token
+    var token oauth2.Token
+    if err := json.Unmarshal(body, &token); err != nil {
+        return nil, err
+    }
+
+    return &token, nil
+}
+
+// Query SharePoint using User OAuth token via Graph API
+func GetSharePointSiteData(token *oauth2.Token, siteID string) (map[string]interface{}, error) {
+	client := oauthConfig.Client(context.Background(), token)
+	resp, err := client.Get("https://graph.microsoft.com/v1.0/sites/" + siteID)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("SharePoint API returned status: %s", resp.Status)
+	}
+
+	var siteData map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&siteData)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse response: %v", err)
+	}
+
+	return siteData, nil
+}
 
 // FetchLiveAMIPatchStatus retrieves a list of AMI patch statuses for Amazon-owned images.
 func FetchLiveAMIPatchStatus(sess *session.Session, filterPattern string) map[string]string {
@@ -400,9 +546,11 @@ func isValidFilterPattern(pattern string) bool {
 }
 
 func main() {
-	// Define HTTP routes
+	// Define HTTP routes for AWS, Github, & Azure Entra
 	http.HandleFunc("/scanvm", ScanVMHandler)
 	http.HandleFunc("/scanlambdas", ScanLambdasHandler)
+	http.HandleFunc("/azurelogin", AzureLoginHandler)
+	http.HandleFunc("/azurecallback", AzureCallbackHandler)
 	port := ":8080"
 	log.Printf("Starting server on port %s...", port)
 
