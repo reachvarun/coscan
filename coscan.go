@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"io"
+	"syscall"
 	"os"
 	"os/signal"
 	"time"
@@ -546,7 +547,7 @@ func isValidFilterPattern(pattern string) bool {
 }
 
 func main() {
-	// Define HTTP routes for AWS, Github, & Azure Entra
+	// Define HTTP routes for AWS, Github, & Azure Entra [TODO] protect '/' via throttling and IP whitelist etc.
 	http.HandleFunc("/scanvm", ScanVMHandler)
 	http.HandleFunc("/scanlambdas", ScanLambdasHandler)
 	http.HandleFunc("/azurelogin", AzureLoginHandler)
@@ -556,7 +557,7 @@ func main() {
 
 	// Create & run the server on separate goroutine with graceful shutdown
 	//
-	srv := &http.Server{Addr: port, Handler: nil}
+	srv := &http.Server{Addr: "0.0.0.0" + port, Handler: nil} // [TODO] Change to 127.0.0.1 when not using reverse proxy to test headless via e.g. ssh -R 8080:localhost:8080 root@188.245.109.243
 	go func() {
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe(): %v", err)
@@ -564,7 +565,7 @@ func main() {
 	}()
 
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
 	<-quit
 	log.Println("Shutting down server...")
