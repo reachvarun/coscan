@@ -15,13 +15,14 @@ Scan for issues across AWS, Azure, & Github.
 
 - **Azure Integration**:
   - Authenticate with Microsoft Entra (Azure AD) using OAuth 2.0.
-  - Access SharePoint sites and list resources securely.
-  - Supports delegated and application-level permissions.
+  - Access SharePoint sites and list resources securely via Microsoft Graph API.
+  - Supports non-Admin user-context delegated & application-level permissions.
 
 ### Planned Features:
 - **Cross-Cloud Analysis**:
   - Compare configurations across AWS, Azure, GCP, and GitHub for consistency.
   - Generate unified security reports for multi-cloud deployments.
+  - Implement per-handler throttling for 3'rd party API's.
 
 - **Agentless Vulnerability Scanning**:
   - Expand scanning capabilities for unmanaged resources without requiring agents.
@@ -75,7 +76,7 @@ curl -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github
 #### Set Environment Variables:
 ```bash
 export AZURE_CLIENT_ID="your-client-id"
-export AZURE_USER_SECRET="your-client-secret"
+export AZURE_USER_SECRET="your-client-secret-Value"
 export AZURE_TENANT_ID="your-tenant-id"
 export AZURE_REDIRECT_URI="http://localhost:8080/azurecallback"
 ```
