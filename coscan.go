@@ -547,7 +547,7 @@ func isValidFilterPattern(pattern string) bool {
 }
 
 func main() {
-	// Define HTTP routes for AWS, Github, & Azure Entra [TODO] protect '/' via throttling and IP whitelist etc.
+	// Define HTTP routes for AWS, Github, & Azure Entra [TODO] protect '/' via throttling and IP whitelist etc. [TODO] Use HTTPS instead of HTTP
 	http.HandleFunc("/scanvm", ScanVMHandler)
 	http.HandleFunc("/scanlambdas", ScanLambdasHandler)
 	http.HandleFunc("/azurelogin", AzureLoginHandler)
