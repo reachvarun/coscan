@@ -96,3 +96,19 @@ export AZURE_REDIRECT_URI="http://localhost:8080/azurecallback"
    ```bash
    curl http://localhost:8080/azurelogin
    ```
+4. **SharePoint**:
+
+   Test the `/scansharepoint` endpoint with a valid `siteID` in a browser e.g.
+   ```
+   http://localhost:8080/scansharepoint?siteID=foobar.sharepoint.com
+   ```
+   Expected Response:
+   ```
+   {
+      "displayName": "foobar",
+      "webUrl": "https://foobar.sharepoint.com",
+      "id": "foobar.sharepoint.com,********-****-****-****-************,********-****-****-****-************",
+      "createdDateTime": "2020-01-27T15:47:38.707Z",
+      "lastModifiedDateTime": "2025-01-04T00:06:06Z"
+   }
+   ```
