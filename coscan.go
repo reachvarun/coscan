@@ -33,7 +33,10 @@ import (
 	"golang.org/x/oauth2/microsoft"
 )
 
-var stateStore = make(map[string]bool) // [TODO] Temporary store for valid states. Move to e.g. Redis for production
+// [TODO] Temporary stores for valid states. Move to e.g. redis for production
+//
+var stateStore = make(map[string]bool)
+var stateSiteMap = make(map[string]string)
 
 // Generate a cryptographically secure random state to prevent CSRF attacks in the OAuth flow
 func generateState() string {
@@ -57,10 +60,11 @@ var oauthConfig = &oauth2.Config{
 func AzureLoginHandler(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
 	stateStore[state] = true
+
 	url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOnline)
 
-	//http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-	fmt.Fprintln(w, url) // Write URL directly to the HTTP response while running headless
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	//fmt.Fprintln(w, url) // Write URL directly to HTTP response
 }
 
 // Handle Azure Entra OAuth callback
@@ -70,33 +74,32 @@ func AzureCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing state", http.StatusBadRequest)
 		return
 	}
-	if !stateStore[state] {
-		http.Error(w, "Invalid state", http.StatusBadRequest)
+
+	var siteID string
+	var exists bool
+	siteID, exists = stateSiteMap[state]
+	if !exists {
+		http.Error(w, "Invalid state or siteID not found", http.StatusBadRequest)
 		return
 	}
 	// Remove the state from the store after validation for replay prevention
-	delete(stateStore, state)
+	delete(stateSiteMap, state)
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, "Authorization code not found", http.StatusBadRequest)
 		return
 	}
-	log.Println("Authorization Code:", code)
 
-	//token, err := oauthConfig.Exchange(context.Background(), code)
-	token, err := ExchangeAzureTokenManually(code) // Exchange token manually while running headless
+	token, err := oauthConfig.Exchange(context.Background(), code)
+	//token, err := ExchangeAzureTokenManually(code)
 	if err != nil {
 		log.Printf("Failed to exchange token: %v", err)
 		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
 		return
 	}
-	// [WARN] For debugging only; do not log sensitive tokens in production
-	log.Println("Access Token:", token.AccessToken)
-	fmt.Fprintf(w, "Token received. Access Token: %s", token.AccessToken)
 
 	// Fetch SharePoint data
-	siteID := r.URL.Query().Get("siteID") // Pass siteID in query
 	if siteID == "" {
 		http.Error(w, "siteID not provided", http.StatusBadRequest)
 		return
@@ -111,6 +114,78 @@ func AzureCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(siteData)
 }
+
+// ScanSharePointHandler integrates login and callback flows for SharePoint scanning
+func ScanSharePointHandler(w http.ResponseWriter, r *http.Request) {
+    siteID := r.URL.Query().Get("siteID")
+    if siteID == "" {
+        http.Error(w, "siteID query parameter is required", http.StatusBadRequest)
+        return
+    }
+
+    authHeader := r.Header.Get("Authorization")
+    if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+        token := strings.TrimPrefix(authHeader, "Bearer ")
+        scanSharePointWithToken(w, token, siteID)
+        return
+    }
+
+    // Initiate login flow if no token is provided
+    state := generateState()
+    stateSiteMap[state] = siteID
+    url := oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOnline)
+    http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
+
+// Perform token validation viz. empty, expiry, scope, etc.
+func validateToken(token string) bool {
+    if token == "" {
+        return false
+    }
+
+    // [TODO] Add additional validation logic for token scope or expiration
+    return true
+}
+
+// scanSharePointWithToken performs the actual SharePoint site scan using the provided token
+func scanSharePointWithToken(w http.ResponseWriter, token string, siteID string) {
+    if token == "" || !validateToken(token) {
+        http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
+        return
+    }
+
+    client := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{
+        AccessToken: token,
+    }))
+    apiURL := fmt.Sprintf("https://graph.microsoft.com/v1.0/sites/%s", siteID)
+    req, err := http.NewRequest("GET", apiURL, nil)
+    if err != nil {
+        http.Error(w, "Failed to create request", http.StatusInternalServerError)
+        return
+    }
+
+    resp, err := client.Do(req)
+    if err != nil {
+        http.Error(w, "Failed to query SharePoint API", http.StatusInternalServerError)
+        return
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        http.Error(w, fmt.Sprintf("SharePoint API returned: %s", resp.Status), http.StatusInternalServerError)
+        return
+    }
+
+    var result map[string]interface{}
+    if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        http.Error(w, "Failed to parse response", http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
 
 // Perform Azure Entra OAuth token exchange manually
 func ExchangeAzureTokenManually(code string) (*oauth2.Token, error) {
@@ -547,17 +622,26 @@ func isValidFilterPattern(pattern string) bool {
 }
 
 func main() {
-	// Define HTTP routes for AWS, Github, & Azure Entra [TODO] protect '/' via throttling and IP whitelist etc. [TODO] Use HTTPS instead of HTTP
+	// Define HTTP routes for AWS, Github, & Azure Entra
+	// [TODO] protect '/' via throttling and IP whitelist etc.
+	// [TODO] Use HTTPS instead of HTTP
+	//
 	http.HandleFunc("/scanvm", ScanVMHandler)
 	http.HandleFunc("/scanlambdas", ScanLambdasHandler)
+	//
+	// azurelogin redirecting to azurecallback is idempotent
+	//
 	http.HandleFunc("/azurelogin", AzureLoginHandler)
 	http.HandleFunc("/azurecallback", AzureCallbackHandler)
+	//
+	http.HandleFunc("/scansharepoint", ScanSharePointHandler)
+	
 	port := ":8080"
 	log.Printf("Starting server on port %s...", port)
 
 	// Create & run the server on separate goroutine with graceful shutdown
 	//
-	srv := &http.Server{Addr: "0.0.0.0" + port, Handler: nil} // [TODO] Change to 127.0.0.1 when not using reverse proxy to test headless via e.g. ssh -R 8080:localhost:8080 root@188.245.109.243
+	srv := &http.Server{Addr: port, Handler: nil}
 	go func() {
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe(): %v", err)
