@@ -1,5 +1,5 @@
 # coscan
-Scan for issues across AWS, Azure, & Github.
+An API-as-a-Service for scanning security and configuration issues across AWS, Azure (including SharePoint), and GitHub, with features for patch analysis, OAuth integration, and code vulnerability checks.
 
 ## Feature Set
 ### Current Features:
