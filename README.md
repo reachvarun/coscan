@@ -51,6 +51,14 @@ export AWS_REGION="your-region"  # e.g., us-east-1
 ```bash
 aws sts get-caller-identity
 ```
+Expected Response:
+```
+{
+    "UserId": "AIDXXXXXXXXXXXXXXXXX",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/your-username"
+}
+```
 
 ### 2. GitHub
 #### Create a Personal Access Token (PAT):
@@ -65,6 +73,17 @@ export GITHUB_TOKEN="your-personal-access-token"
 #### Test:
 ```bash
 curl -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/user/$GITHUB_USER
+```
+Expected Response:
+```
+{
+    "login": "your-github-username",
+    "id": 12345678,
+    "node_id": "MDQ6VXNlcjEyMzQ1Njc4",
+    "name": "Your Name",
+    "email": "your-email@example.com",
+    ...
+}
 ```
 
 ### 3. Azure
@@ -82,23 +101,91 @@ export AZURE_REDIRECT_URI="http://localhost:8080/azurecallback"
 ```
 
 #### Test:
+```bash
+az login --service-principal \
+    --username $CLIENT_ID \
+    --password $CLIENT_SECRET \
+    --tenant $TENANT_ID
+```
+Expected Response:
+```
+[
+  {
+    "cloudName": "AzureCloud",
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "isDefault": true,
+    "name": "Your Subscription Name",
+    "state": "Enabled",
+    "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "user": {
+      "name": "your-client-id",
+      "type": "servicePrincipal"
+    }
+  }
+]
+```
 
 ### Testing All Integrations
 1. **AWS**:
+   Scan for AWS instances and their patch compliance status.
    ```bash
    curl "http://localhost:8080/scanvm?scanPatches=true&filter=critical&amiFilter=ubuntu/images/hvm-ssd/ubuntu-*"
    ```
+   Expected Response:
+   ```
+   {
+    "instances": [
+        {
+            "instanceId": "i-0a0b0c0d0e0f0g0h",
+            "state": "running",
+            "patchStatus": "Compliant"
+        },
+        {
+            "instanceId": "i-1a1b1c1d1e1f1g1h",
+            "state": "stopped",
+            "patchStatus": "Non-compliant"
+        }
+    ]
+   }
+   ```
 2. **GitHub**:
+   Scan for security issues in the specified GitHub repository.
    ```bash
    curl "http://localhost:8080/scanlambdas?repo=coscan"
    ```
+   Expected Response:
+   ```
+   {
+    "repository": "coscan",
+    "alerts": [
+        {
+            "rule": "Insecure Dependency",
+            "file": "package.json",
+            "line": 15,
+            "description": "Uses outdated version of lodash with known vulnerabilities."
+        },
+        {
+            "rule": "Hardcoded Secrets",
+            "file": "config.js",
+            "line": 42,
+            "description": "Found hardcoded API key."
+        }
+    ]
+   }
+   ```
 3. **Azure**:
+   Test that Azure login (and associated callback) has been successfully initiated.
    ```bash
    curl http://localhost:8080/azurelogin
    ```
+   Expected Response:
+   ```
+   {
+    "message": "Azure login initiated successfully. Please complete login in your browser."
+   }
+   ```
 4. **SharePoint**:
-
-   Test the `/scansharepoint` endpoint with a valid `siteID` in a browser e.g.
+   Test the `/scansharepoint` endpoint with a valid `siteID` in a browser e.g. for the root SharePoint site.
    ```
    http://localhost:8080/scansharepoint?siteID=foobar.sharepoint.com
    ```
